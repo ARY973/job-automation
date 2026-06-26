@@ -1,19 +1,17 @@
 """
-CJA Job Automation — Phase 1: Intelligent Job Discovery
-========================================================
-Weekly automated pipeline that:
-1. Scrapes LinkedIn Jobs across 14 target locations
-2. Filters by level, keywords, and deal breakers
-3. Checks H1B sponsorship history via h1bdata.info
+CJA Job Automation — Phase 1 v2: Multi-Platform Job Discovery
+=============================================================
+Uses openclawai/job-board-scraper to scrape LinkedIn, Indeed,
+Glassdoor, Google Jobs, and ZipRecruiter simultaneously.
+
+Weekly automated pipeline:
+1. Scrapes 5 platforms x 14 locations
+2. Filters by level, keywords, deal breakers
+3. Checks H1B sponsorship history
 4. Scores each role 1-10
-5. Logs top results to Google Sheet tracker
+5. Outputs top 15 vetted roles
 
-Usage:
-    python job_scraper.py
-
-Requires .env:
-    APIFY_TOKEN=your_token
-    GOOGLE_SHEET_ID=your_sheet_id
+Requires env: APIFY_TOKEN=your_token
 """
 
 import os
@@ -22,318 +20,253 @@ import time
 import requests
 from datetime import datetime
 
-# ── Configuration ─────────────────────────────────────────────────────────────
-
 APIFY_TOKEN = os.getenv('APIFY_TOKEN')
+ACTOR = "openclawai~job-board-scraper"
 
-# Target search URLs — Utah first, then national
-SEARCH_CONFIGS = [
-    # Utah — highest priority
-    {"location": "Salt Lake City, UT",     "keywords": "Data Analyst",               "priority": 1},
-    {"location": "Salt Lake City, UT",     "keywords": "Business Intelligence Analyst","priority": 1},
-    {"location": "Provo Lehi Lindon, UT",  "keywords": "Data Analyst",               "priority": 1},
-    {"location": "Salt Lake City, UT",     "keywords": "Analytics Engineer",          "priority": 1},
-
-    # National Tier 1
-    {"location": "Austin, TX",             "keywords": "Data Analyst",               "priority": 2},
-    {"location": "Denver, CO",             "keywords": "Data Analyst",               "priority": 2},
-    {"location": "Seattle, WA",            "keywords": "Data Analyst",               "priority": 2},
-    {"location": "Dallas, TX",             "keywords": "Data Analyst",               "priority": 2},
-    {"location": "Atlanta, GA",            "keywords": "Data Analyst",               "priority": 2},
-
-    # National Tier 2
-    {"location": "Chicago, IL",            "keywords": "Data Analyst",               "priority": 3},
-    {"location": "Phoenix, AZ",            "keywords": "Data Analyst",               "priority": 3},
-    {"location": "Minneapolis, MN",        "keywords": "Data Analyst",               "priority": 3},
-    {"location": "Raleigh, NC",            "keywords": "Data Analyst",               "priority": 3},
-
-    # Remote
-    {"location": "United States",          "keywords": "Data Analyst Remote",        "priority": 2},
-    {"location": "United States",          "keywords": "Business Intelligence Remote","priority": 2},
+SEARCHES = [
+    {"location": "Salt Lake City, UT",  "term": "Data Analyst",                 "priority": 1},
+    {"location": "Salt Lake City, UT",  "term": "Business Intelligence Analyst", "priority": 1},
+    {"location": "Lehi, UT",            "term": "Data Analyst",                 "priority": 1},
+    {"location": "Salt Lake City, UT",  "term": "Analytics Engineer",           "priority": 1},
+    {"location": "Austin, TX",          "term": "Data Analyst",                 "priority": 2},
+    {"location": "Denver, CO",          "term": "Data Analyst",                 "priority": 2},
+    {"location": "Seattle, WA",         "term": "Data Analyst",                 "priority": 2},
+    {"location": "Dallas, TX",          "term": "Data Analyst",                 "priority": 2},
+    {"location": "Atlanta, GA",         "term": "Data Analyst",                 "priority": 2},
+    {"location": "Chicago, IL",         "term": "Data Analyst",                 "priority": 3},
+    {"location": "Phoenix, AZ",         "term": "Data Analyst",                 "priority": 3},
+    {"location": "Minneapolis, MN",     "term": "Data Analyst",                 "priority": 3},
+    {"location": "Raleigh, NC",         "term": "Data Analyst",                 "priority": 3},
+    {"location": "Remote",              "term": "Data Analyst Remote",          "priority": 2},
 ]
 
-# ── Deal Breaker Keywords (auto-filter OUT) ───────────────────────────────────
+PLATFORMS = ["linkedin", "indeed", "glassdoor", "google", "zip_recruiter"]
+
 DEALBREAKER_TITLE = [
-    "senior", "sr.", "sr ", "lead", "principal", "manager", "director",
-    "head of", "vp ", "vice president", "chief", "staff", "architect"
+    "senior", "sr.", "sr ", "lead", "principal", "manager",
+    "director", "head of", "vp ", "vice president", "chief", "architect"
 ]
 
-DEALBREAKER_DESCRIPTION = [
+DEALBREAKER_DESC = [
     "no sponsorship", "visa sponsorship is not available",
-    "sponsorship not available", "us citizenship required",
-    "must be a us citizen", "security clearance", "top secret",
-    "secret clearance", "defense", "oil and gas", "oil & gas",
-    "department of defense", "government contractor",
-    "5+ years", "7+ years", "8+ years", "10+ years",
-    "10 years", "7 years", "8 years"
+    "us citizenship required", "security clearance", "top secret",
+    "5+ years", "7+ years", "8+ years", "10+ years"
 ]
 
-# ── Must-Have Keywords (role must contain at least one) ──────────────────────
+AVOID_COMPANIES = [
+    "lockheed", "raytheon", "northrop", "general dynamics",
+    "l3harris", "booz allen", "saic", "leidos",
+    "halliburton", "chevron", "exxon", "shell"
+]
+
 MUST_HAVE_TITLE = [
     "data analyst", "business intelligence", "bi analyst",
     "analytics engineer", "data engineer", "reporting analyst",
-    "data science", "ai analyst", "ml analyst", "product analyst",
+    "data scientist", "ai analyst", "product analyst",
     "operations analyst", "business analyst"
 ]
 
-# ── Industries to Avoid ───────────────────────────────────────────────────────
-AVOID_INDUSTRIES = [
-    "defense", "military", "oil", "gas", "petroleum",
-    "government", "federal", "department of", "dod", "army",
-    "navy", "air force", "lockheed", "raytheon", "northrop",
-    "general dynamics", "l3harris", "booz allen", "saic", "leidos"
+GOOD_SKILLS = [
+    "power bi", "python", "sql", "tableau", "etl", "pipeline",
+    "machine learning", "databricks", "snowflake", "dbt",
+    "analytics", "dashboard", "visualization", "pandas"
 ]
 
-# ── Sponsorship Lookup ────────────────────────────────────────────────────────
-def check_h1b_sponsorship(company_name):
-    """
-    Check if company has H1B sponsorship history via H1B data API.
-    Returns: 'Yes', 'No', or 'Unknown'
-    """
-    if not company_name:
-        return 'Unknown'
-
+def check_sponsorship(company):
+    if not company:
+        return "Unknown"
     try:
-        # Clean company name for search
-        clean_name = company_name.lower().strip()
-        clean_name = clean_name.replace(',', '').replace('.', '').replace('inc', '').replace('llc', '').strip()
-
-        url = f"https://h1bdata.info/index.php?em={requests.utils.quote(clean_name)}&job=data+analyst&city=&year=2024"
-        response = requests.get(url, timeout=10)
-
-        if response.status_code == 200 and len(response.text) > 1000:
-            # If results page has substantial content, company has sponsored
-            return 'Yes'
-        else:
-            return 'Unknown'
+        clean = company.lower().strip()
+        for word in [",", ".", "inc", "llc", "ltd", "corp"]:
+            clean = clean.replace(word, "")
+        url = f"https://h1bdata.info/index.php?em={requests.utils.quote(clean.strip())}&job=data+analyst&city=&year=2024"
+        resp = requests.get(url, timeout=8)
+        if resp.status_code == 200 and len(resp.text) > 2000:
+            return "Yes"
+        return "Unknown"
     except:
-        return 'Unknown'
+        return "Unknown"
 
-# ── Scoring System ────────────────────────────────────────────────────────────
-def score_job(job, sponsorship_status, priority):
-    """
-    Score a job 1-10 based on multiple factors.
-    Higher = better fit for Aryan.
-    """
-    score = 5  # Base score
+def score_job(job, sponsorship, priority):
+    score = 5
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    company = (job.get("company") or job.get("companyName") or "").lower()
+    location = (job.get("location") or "").lower()
 
-    title = (job.get('title') or '').lower()
-    description = (job.get('description') or job.get('descriptionText') or '').lower()
-    company = (job.get('companyName') or '').lower()
-    location = (job.get('location') or '').lower()
-
-    # Location bonus
-    if 'utah' in location or 'salt lake' in location or 'provo' in location or 'logan' in location:
+    if any(x in location for x in ["utah", "salt lake", "provo", "lehi", "logan"]):
         score += 2
-    elif 'remote' in location or 'remote' in title:
+    elif "remote" in location or "remote" in title:
         score += 1
 
-    # Sponsorship bonus
-    if sponsorship_status == 'Yes':
+    if sponsorship == "Yes":
         score += 2
-    elif sponsorship_status == 'Unknown':
-        score += 0
-    else:
+    elif sponsorship == "No":
         score -= 3
 
-    # Priority location bonus
     if priority == 1:
         score += 1
 
-    # Key skills in description
-    key_skills = ['power bi', 'python', 'sql', 'tableau', 'etl', 'pipeline',
-                  'machine learning', 'databricks', 'snowflake', 'dbt']
-    skill_matches = sum(1 for skill in key_skills if skill in description)
-    score += min(skill_matches, 3)  # Max +3 for skills
+    matches = sum(1 for s in GOOD_SKILLS if s in desc)
+    score += min(matches, 3)
 
-    # Entry level signals
-    entry_signals = ['entry level', 'junior', 'associate', '0-2 years',
-                     '1-3 years', '2+ years', 'new grad']
-    if any(signal in description for signal in entry_signals):
+    entry = ["entry level", "junior", "associate", "0-2 years", "1-3 years"]
+    if any(e in desc or e in title for e in entry):
         score += 1
 
-    # Preferred industries
-    good_industries = ['fintech', 'saas', 'healthcare', 'edtech', 'tech',
-                       'software', 'analytics', 'university', 'research']
-    if any(ind in company or ind in description for ind in good_industries):
+    good = ["saas", "fintech", "healthcare", "edtech", "tech", "software", "university"]
+    if any(g in company or g in desc for g in good):
         score += 1
 
-    return min(max(score, 1), 10)  # Clamp between 1-10
+    return min(max(score, 1), 10)
 
-# ── Main Filter Logic ─────────────────────────────────────────────────────────
-def filter_job(job):
-    """
-    Returns True if job passes all filters, False if it should be removed.
-    """
-    title = (job.get('title') or '').lower()
-    description = (job.get('description') or job.get('descriptionText') or '').lower()
-    company = (job.get('companyName') or '').lower()
+def passes_filter(job):
+    title = (job.get("title") or "").lower()
+    desc = (job.get("description") or "").lower()
+    company = (job.get("company") or job.get("companyName") or "").lower()
 
-    # Must have relevant title
-    if not any(keyword in title for keyword in MUST_HAVE_TITLE):
+    if not any(k in title for k in MUST_HAVE_TITLE):
         return False
-
-    # Filter out senior/executive titles
-    if any(breaker in title for breaker in DEALBREAKER_TITLE):
+    if any(b in title for b in DEALBREAKER_TITLE):
         return False
-
-    # Filter out deal breaker description keywords
-    if any(breaker in description for breaker in DEALBREAKER_DESCRIPTION):
+    if any(b in desc for b in DEALBREAKER_DESC):
         return False
-
-    # Filter out avoid industries
-    if any(industry in company or industry in description for industry in AVOID_INDUSTRIES):
+    if any(a in company for a in AVOID_COMPANIES):
         return False
-
     return True
 
-# ── Apify Scraper ─────────────────────────────────────────────────────────────
-def scrape_linkedin_jobs(config, max_results=30):
-    """
-    Run Apify LinkedIn jobs scraper for a given search config.
-    """
-    keywords = config['keywords']
-    location = config['location']
+def run_scraper(search, max_results=15):
+    print(f"   Scraping: {search['term']} in {search['location']}...")
+    headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
+    run_url = f"https://api.apify.com/v2/acts/{ACTOR}/runs"
 
-    # Build LinkedIn search URL
-    base_url = "https://www.linkedin.com/jobs/search"
-    params = f"?keywords={requests.utils.quote(keywords)}&location={requests.utils.quote(location)}&f_TPR=r604800&position=1&pageNum=0"
-    search_url = base_url + params
-
-    print(f"   Scraping: {keywords} in {location}...")
+    payload = {
+        "searchTerm": search["term"],
+        "location": search["location"],
+        "sites": PLATFORMS,
+        "maxResults": max_results,
+        "jobType": "fulltime",
+        "hoursOld": 168,
+        "countryIndeed": "usa",
+        "descriptionFormat": "markdown",
+        "enforceAnnualSalary": True,
+        "linkedinFetchDescription": True,
+        "proxyConfiguration": {"useApifyProxy": True}
+    }
 
     try:
-        # Start Apify actor run
-        run_url = "https://api.apify.com/v2/acts/curious_coder~linkedin-jobs-scraper/runs"
-        headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
-
-        payload = {
-            "count": max_results,
-            "scrapeCompany": False,
-            "urls": [search_url]
-        }
-
-        response = requests.post(run_url, json=payload, headers=headers, timeout=30)
-
-        if response.status_code not in (200, 201):
-            print(f"   Failed to start actor: {response.status_code}")
+        resp = requests.post(run_url, json=payload, headers=headers, timeout=30)
+        if resp.status_code not in (200, 201):
+            print(f"   Failed: {resp.status_code}")
             return []
 
-        run_id = response.json()['data']['id']
-        dataset_id = response.json()['data']['defaultDatasetId']
+        run_id = resp.json()["data"]["id"]
+        dataset_id = resp.json()["data"]["defaultDatasetId"]
 
-        # Wait for completion (max 90 seconds)
-        for _ in range(18):
+        for _ in range(24):
             time.sleep(5)
-            status_url = f"https://api.apify.com/v2/acts/curious_coder~linkedin-jobs-scraper/runs/{run_id}"
-            status_resp = requests.get(status_url, headers=headers, timeout=10)
-            status = status_resp.json()['data']['status']
-            if status in ('SUCCEEDED', 'FAILED', 'ABORTED'):
+            status_resp = requests.get(
+                f"https://api.apify.com/v2/acts/{ACTOR}/runs/{run_id}",
+                headers=headers, timeout=10
+            )
+            status = status_resp.json()["data"]["status"]
+            if status in ("SUCCEEDED", "FAILED", "ABORTED"):
                 break
 
-        if status != 'SUCCEEDED':
-            print(f"   Actor ended with status: {status}")
+        if status != "SUCCEEDED":
+            print(f"   Run ended: {status}")
             return []
 
-        # Fetch results
-        results_url = f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json"
-        results_resp = requests.get(results_url, headers=headers, timeout=30)
-        jobs = results_resp.json()
-
-        print(f"   Found {len(jobs)} raw results")
+        items_resp = requests.get(
+            f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json",
+            headers=headers, timeout=30
+        )
+        jobs = items_resp.json()
+        print(f"   Found: {len(jobs)} raw results")
         return jobs
 
     except Exception as e:
         print(f"   Error: {e}")
         return []
 
-# ── Main Pipeline ─────────────────────────────────────────────────────────────
 def run_pipeline():
-    """
-    Full automated pipeline: scrape → filter → score → output.
-    """
     print(f"\n{'='*60}")
-    print(f"JOB AUTOMATION PIPELINE — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"JOB AUTOMATION v2 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"Platforms: LinkedIn + Indeed + Glassdoor + Google + ZipRecruiter")
     print(f"{'='*60}\n")
 
     all_jobs = []
-    seen_ids = set()
+    seen = set()
 
-    # Scrape each search config
-    for config in SEARCH_CONFIGS:
-        jobs = scrape_linkedin_jobs(config, max_results=25)
-
+    for search in SEARCHES:
+        jobs = run_scraper(search)
         for job in jobs:
-            job_id = job.get('id') or job.get('jobId') or job.get('link')
-            if job_id in seen_ids:
+            job_id = (
+                job.get("id") or
+                f"{job.get('title','')}-{job.get('company','')}-{job.get('location','')}"
+            )
+            if job_id in seen:
                 continue
-            seen_ids.add(job_id)
+            seen.add(job_id)
 
-            # Apply filters
-            if not filter_job(job):
+            if not passes_filter(job):
                 continue
 
-            # Check sponsorship
-            company = job.get('companyName') or ''
-            sponsorship = check_h1b_sponsorship(company)
+            company = job.get("company") or job.get("companyName") or ""
+            sponsorship = check_sponsorship(company)
+            score = score_job(job, sponsorship, search["priority"])
 
-            # Score the job
-            score = score_job(job, sponsorship, config['priority'])
-
-            # Add metadata
-            job['_sponsorship'] = sponsorship
-            job['_score'] = score
-            job['_search_location'] = config['location']
-            job['_priority'] = config['priority']
-
+            job["_sponsorship"] = sponsorship
+            job["_score"] = score
+            job["_search_location"] = search["location"]
+            job["_platform"] = job.get("source") or job.get("platform") or "Unknown"
             all_jobs.append(job)
 
-        time.sleep(2)  # Rate limiting between searches
+        time.sleep(3)
 
-    # Sort by score descending
-    all_jobs.sort(key=lambda x: x['_score'], reverse=True)
-
-    # Take top 15
+    all_jobs.sort(key=lambda x: x["_score"], reverse=True)
     top_jobs = all_jobs[:15]
 
     print(f"\n{'='*60}")
-    print(f"TOP {len(top_jobs)} VETTED ROLES")
+    print(f"TOP {len(top_jobs)} VETTED ROLES THIS WEEK")
     print(f"{'='*60}\n")
 
     results = []
     for i, job in enumerate(top_jobs, 1):
-        title = job.get('title', 'N/A')
-        company = job.get('companyName', 'N/A')
-        location = job.get('location', 'N/A')
-        link = job.get('link') or job.get('applyUrl', 'N/A')
-        score = job['_score']
-        sponsorship = job['_sponsorship']
+        title = job.get("title", "N/A")
+        company = job.get("company") or job.get("companyName", "N/A")
+        location = job.get("location", "N/A")
+        salary = job.get("salary") or job.get("salaryMin") or "Not listed"
+        platform = job.get("_platform", "Unknown")
+        link = job.get("jobUrl") or job.get("link") or job.get("applyUrl", "N/A")
+        score = job["_score"]
+        sponsorship = job["_sponsorship"]
 
         print(f"{i:2}. [{score}/10] {title}")
         print(f"    {company} | {location}")
+        print(f"    Salary: {salary} | Platform: {platform}")
         print(f"    Sponsorship: {sponsorship}")
         print(f"    {link}\n")
 
         results.append({
-            'score': score,
-            'title': title,
-            'company': company,
-            'location': location,
-            'sponsorship': sponsorship,
-            'link': link,
-            'date_found': datetime.now().strftime('%Y-%m-%d'),
+            "score": score,
+            "title": title,
+            "company": company,
+            "location": location,
+            "salary": str(salary),
+            "platform": platform,
+            "sponsorship": sponsorship,
+            "link": link,
+            "date_found": datetime.now().strftime("%Y-%m-%d"),
         })
 
-    # Save results to JSON
-    output_path = f"/home/claude/job_automation/results_{datetime.now().strftime('%Y%m%d')}.json"
-    with open(output_path, 'w') as f:
+    output = f"results_{datetime.now().strftime('%Y%m%d')}.json"
+    with open(output, "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"\n✅ Results saved to: {output_path}")
-    print(f"✅ Total vetted roles: {len(top_jobs)}")
-    print(f"✅ Ready to review and apply!\n")
-
+    print(f"✅ {len(top_jobs)} vetted roles saved to {output}")
+    print(f"📊 Tracker: https://docs.google.com/spreadsheets/d/1HNxlJ_vIHZl5XWYlYl_RbvtyEfNsLbYbXpCSuzparMU")
     return results
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     run_pipeline()
