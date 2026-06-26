@@ -1,0 +1,36 @@
+name: Weekly Job Discovery Pipeline
+
+on:
+  schedule:
+    - cron: '0 15 * * 1'
+  workflow_dispatch:
+
+jobs:
+  discover-jobs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install requests python-dotenv
+
+      - name: Run job scraper
+        env:
+          APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+        run: |
+          python3 job_scraper.py
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: job-results-${{ github.run_number }}
+          path: results_*.json
+          retention-days: 30
