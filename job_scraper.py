@@ -1,17 +1,12 @@
 """
-CJA Job Automation — Phase 1 v2: Multi-Platform Job Discovery
-=============================================================
-Uses openclawai/job-board-scraper to scrape LinkedIn, Indeed,
-Glassdoor, Google Jobs, and ZipRecruiter simultaneously.
+CJA Job Automation — Phase 2 v4: PM + DA Multi-Platform Discovery
+=================================================================
+Searches for Product Manager AND Data Analyst roles across
+US + India locations on 5 platforms simultaneously.
 
-Weekly automated pipeline:
-1. Scrapes 5 platforms x 14 locations
-2. Filters by level, keywords, deal breakers
-3. Checks H1B sponsorship history
-4. Scores each role 1-10
-5. Outputs top 15 vetted roles
-
-Requires env: APIFY_TOKEN=your_token
+Requires env:
+    APIFY_TOKEN=your_apify_token
+    ANTHROPIC_API_KEY=your_claude_api_key
 """
 
 import os
@@ -20,37 +15,52 @@ import time
 import requests
 from datetime import datetime
 
-APIFY_TOKEN = os.getenv('APIFY_TOKEN')
-ACTOR = "openclawai~job-board-scraper"
+APIFY_TOKEN       = os.getenv('APIFY_TOKEN')
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+ACTOR             = "openclawai~job-board-scraper"
+PLATFORMS         = ["linkedin", "indeed", "glassdoor", "google", "zip_recruiter"]
 
+# ── Search Configurations ─────────────────────────────────────────────────────
 SEARCHES = [
-    {"location": "Salt Lake City, UT",  "term": "Data Analyst",                 "priority": 1},
-    {"location": "Salt Lake City, UT",  "term": "Business Intelligence Analyst", "priority": 1},
-    {"location": "Lehi, UT",            "term": "Data Analyst",                 "priority": 1},
-    {"location": "Salt Lake City, UT",  "term": "Analytics Engineer",           "priority": 1},
-    {"location": "Austin, TX",          "term": "Data Analyst",                 "priority": 2},
-    {"location": "Denver, CO",          "term": "Data Analyst",                 "priority": 2},
-    {"location": "Seattle, WA",         "term": "Data Analyst",                 "priority": 2},
-    {"location": "Dallas, TX",          "term": "Data Analyst",                 "priority": 2},
-    {"location": "Atlanta, GA",         "term": "Data Analyst",                 "priority": 2},
-    {"location": "Chicago, IL",         "term": "Data Analyst",                 "priority": 3},
-    {"location": "Phoenix, AZ",         "term": "Data Analyst",                 "priority": 3},
-    {"location": "Minneapolis, MN",     "term": "Data Analyst",                 "priority": 3},
-    {"location": "Raleigh, NC",         "term": "Data Analyst",                 "priority": 3},
-    {"location": "Remote",              "term": "Data Analyst Remote",          "priority": 2},
+    # ── US Utah — Priority 1 ──────────────────────────────────────────────────
+    {"location": "Salt Lake City, UT",  "term": "Associate Product Manager",     "priority": 1, "market": "US"},
+    {"location": "Salt Lake City, UT",  "term": "AI Product Analyst",            "priority": 1, "market": "US"},
+    {"location": "Salt Lake City, UT",  "term": "Product Analyst",               "priority": 1, "market": "US"},
+    {"location": "Lehi, UT",            "term": "Associate Product Manager",     "priority": 1, "market": "US"},
+    {"location": "Salt Lake City, UT",  "term": "Technical Business Analyst",    "priority": 1, "market": "US"},
+    {"location": "Salt Lake City, UT",  "term": "Data Analyst",                  "priority": 1, "market": "US"},
+
+    # ── US National — Priority 2 ──────────────────────────────────────────────
+    {"location": "Austin, TX",          "term": "Associate Product Manager",     "priority": 2, "market": "US"},
+    {"location": "Seattle, WA",         "term": "Associate Product Manager",     "priority": 2, "market": "US"},
+    {"location": "Denver, CO",          "term": "Product Analyst",               "priority": 2, "market": "US"},
+    {"location": "Atlanta, GA",         "term": "AI Product Analyst",            "priority": 2, "market": "US"},
+    {"location": "Remote",              "term": "Associate Product Manager",     "priority": 2, "market": "US"},
+    {"location": "Remote",              "term": "AI Product Analyst Remote",     "priority": 2, "market": "US"},
+
+    # ── India — Priority 1 (no visa friction) ─────────────────────────────────
+    {"location": "Bangalore, India",    "term": "Associate Product Manager",     "priority": 1, "market": "India"},
+    {"location": "Bangalore, India",    "term": "Product Analyst",               "priority": 1, "market": "India"},
+    {"location": "Bangalore, India",    "term": "AI Product Manager",            "priority": 1, "market": "India"},
+    {"location": "Mumbai, India",       "term": "Associate Product Manager",     "priority": 1, "market": "India"},
+    {"location": "Pune, India",         "term": "Associate Product Manager",     "priority": 1, "market": "India"},
+    {"location": "Hyderabad, India",    "term": "Product Analyst",               "priority": 1, "market": "India"},
+
+    # ── Canada — Priority 2 ───────────────────────────────────────────────────
+    {"location": "Toronto, Canada",     "term": "Associate Product Manager",     "priority": 2, "market": "Canada"},
+    {"location": "Vancouver, Canada",   "term": "Product Analyst",               "priority": 2, "market": "Canada"},
 ]
 
-PLATFORMS = ["linkedin", "indeed", "glassdoor", "google", "zip_recruiter"]
-
+# ── Filters ───────────────────────────────────────────────────────────────────
 DEALBREAKER_TITLE = [
-    "senior", "sr.", "sr ", "lead", "principal", "manager",
-    "director", "head of", "vp ", "vice president", "chief", "architect"
+    "senior", "sr.", "sr ", "lead", "principal", "director",
+    "head of", "vp ", "vice president", "chief", "staff"
 ]
 
 DEALBREAKER_DESC = [
     "no sponsorship", "visa sponsorship is not available",
     "us citizenship required", "security clearance", "top secret",
-    "5+ years", "7+ years", "8+ years", "10+ years"
+    "7+ years", "8+ years", "10+ years", "10 years experience"
 ]
 
 AVOID_COMPANIES = [
@@ -60,69 +70,136 @@ AVOID_COMPANIES = [
 ]
 
 MUST_HAVE_TITLE = [
-    "data analyst", "business intelligence", "bi analyst",
-    "analytics engineer", "data engineer", "reporting analyst",
-    "data scientist", "ai analyst", "product analyst",
-    "operations analyst", "business analyst"
+    "product manager", "product analyst", "associate pm", "apm",
+    "ai product", "technical product", "data product",
+    "business analyst", "product owner", "data analyst",
+    "analytics engineer", "ml product", "technical business"
 ]
 
 GOOD_SKILLS = [
-    "power bi", "python", "sql", "tableau", "etl", "pipeline",
-    "machine learning", "databricks", "snowflake", "dbt",
-    "analytics", "dashboard", "visualization", "pandas"
+    "python", "sql", "product", "agile", "roadmap", "stakeholder",
+    "analytics", "machine learning", "ai", "fintech", "data",
+    "etl", "pipeline", "dashboard", "metrics", "kpi"
 ]
 
-def check_sponsorship(company):
+# ── Candidate Profile ─────────────────────────────────────────────────────────
+CANDIDATE_PROFILE = """
+Name: Aryan (Ryan) Mudhole
+Degree: MS Management Information Systems, Utah State University (graduating May 2027)
+Work Auth: F-1 OPT (3-year STEM OPT after graduation for US). Indian national (no visa needed for India roles).
+Experience:
+- Graduate Data Analyst (Product Owner), USU Transforming Communities Institute (Apr 2026-Mar 2027)
+  Owned data product end-to-end: requirements gathering, architecture design, pipeline build, production deployment
+  Serves 220 clients and Utah Supreme Court reporting goals
+- Power BI Analyst Intern, Medikart Pharmaceutical (Jan-Mar 2024)
+  Full product discovery to delivery: stakeholder needs → KPI definition → dashboard build → 40% time reduction
+- SAP Materials Management Intern, Tata Motors (Jun-Aug 2024)
+  Enterprise data systems, procurement analytics at scale
+Skills: Python, SQL, ETL pipelines, REST APIs, Power BI, AWS EC2, GitHub Actions,
+        XGBoost, Scikit-learn, Advanced ML, LLM integration, data governance
+Projects: AI-Powered Stock Trading Pipeline (0-to-1 product build, AWS EC2, XGBoost, Groq Llama 3)
+Certs: Databricks Fundamentals Accreditation (100%, Jun 2026)
+Leadership: President, USU AI Club
+Target roles: Associate PM, AI Product Analyst, Product Analyst, Technical Business Analyst, Data Product Manager
+Markets: US (OPT 3yr) + India (citizen, no visa) + Canada
+"""
+
+def score_with_claude(job):
+    if not ANTHROPIC_API_KEY:
+        return {"score": 5, "reasoning": "No API key", "resume_variant": "Razorpay_PM", "apply": "Maybe"}
+
+    title    = job.get("title", "")
+    company  = job.get("company") or job.get("companyName", "")
+    location = job.get("location", "")
+    desc     = (job.get("description") or "")[:3000]
+    salary   = job.get("salary") or "Not listed"
+    market   = job.get("_market", "US")
+
+    prompt = f"""Analyze this job for the candidate. Return ONLY valid JSON, no other text.
+
+CANDIDATE:
+{CANDIDATE_PROFILE}
+
+JOB:
+Title: {title}
+Company: {company}
+Location: {location}
+Market: {market}
+Salary: {salary}
+Description: {desc}
+
+Return ONLY this JSON:
+{{
+  "score": <1-10 integer>,
+  "apply": "<Yes/No/Maybe>",
+  "resume_variant": "<PM_Universal/Razorpay_PM/Grit/Deloitte/USU_BI/v5>",
+  "sponsorship_flag": <true/false>,
+  "key_match": "<strongest match in one sentence>",
+  "key_gap": "<biggest gap in one sentence, or None>",
+  "reasoning": "<2 sentences max>"
+}}
+
+Score guide:
+9-10: Excellent fit — title matches target roles, experience level appropriate, strong skill overlap
+7-8: Good fit — most requirements match, minor gaps
+5-6: Moderate fit — some gaps but worth considering
+3-4: Stretch role — significant gaps
+1-2: Poor fit — skip
+
+Resume variants:
+- PM_Universal: For any PM/product analyst role — leads with product ownership story
+- Razorpay_PM: India PM roles specifically
+- Grit: ETL/pipeline/data engineering roles
+- Deloitte: Cloud/AWS/data engineering consulting
+- USU_BI: Power BI/dashboard/BI analyst roles
+- v5: General DA roles
+
+India market note: Salary expectations INR 10-20 LPA for entry PM roles. No sponsorship needed."""
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 400,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=30
+        )
+        if resp.status_code == 200:
+            text = resp.json()["content"][0]["text"].strip()
+            if "```" in text:
+                text = text.split("```")[1].replace("json", "").strip()
+            return json.loads(text)
+        return {"score": 5, "reasoning": f"API error {resp.status_code}", "resume_variant": "PM_Universal", "apply": "Maybe"}
+    except Exception as e:
+        return {"score": 5, "reasoning": str(e), "resume_variant": "PM_Universal", "apply": "Maybe"}
+
+def check_sponsorship(company, market):
+    if market == "India":
+        return "N/A - India role"
+    if market == "Canada":
+        return "No lottery - Express Entry"
     if not company:
         return "Unknown"
     try:
         clean = company.lower().strip()
-        for word in [",", ".", "inc", "llc", "ltd", "corp"]:
-            clean = clean.replace(word, "")
-        url = f"https://h1bdata.info/index.php?em={requests.utils.quote(clean.strip())}&job=data+analyst&city=&year=2024"
+        for w in [",", ".", "inc", "llc", "ltd", "corp"]:
+            clean = clean.replace(w, "")
+        url = f"https://h1bdata.info/index.php?em={requests.utils.quote(clean.strip())}&job=product+manager&city=&year=2024"
         resp = requests.get(url, timeout=8)
-        if resp.status_code == 200 and len(resp.text) > 2000:
-            return "Yes"
-        return "Unknown"
+        return "Yes" if resp.status_code == 200 and len(resp.text) > 2000 else "Unknown"
     except:
         return "Unknown"
 
-def score_job(job, sponsorship, priority):
-    score = 5
-    title = (job.get("title") or "").lower()
-    desc = (job.get("description") or "").lower()
-    company = (job.get("company") or job.get("companyName") or "").lower()
-    location = (job.get("location") or "").lower()
-
-    if any(x in location for x in ["utah", "salt lake", "provo", "lehi", "logan"]):
-        score += 2
-    elif "remote" in location or "remote" in title:
-        score += 1
-
-    if sponsorship == "Yes":
-        score += 2
-    elif sponsorship == "No":
-        score -= 3
-
-    if priority == 1:
-        score += 1
-
-    matches = sum(1 for s in GOOD_SKILLS if s in desc)
-    score += min(matches, 3)
-
-    entry = ["entry level", "junior", "associate", "0-2 years", "1-3 years"]
-    if any(e in desc or e in title for e in entry):
-        score += 1
-
-    good = ["saas", "fintech", "healthcare", "edtech", "tech", "software", "university"]
-    if any(g in company or g in desc for g in good):
-        score += 1
-
-    return min(max(score, 1), 10)
-
 def passes_filter(job):
-    title = (job.get("title") or "").lower()
-    desc = (job.get("description") or "").lower()
+    title   = (job.get("title") or "").lower()
+    desc    = (job.get("description") or "").lower()
     company = (job.get("company") or job.get("companyName") or "").lower()
 
     if not any(k in title for k in MUST_HAVE_TITLE):
@@ -136,10 +213,8 @@ def passes_filter(job):
     return True
 
 def run_scraper(search, max_results=15):
-    print(f"   Scraping: {search['term']} in {search['location']}...")
+    print(f"   [{search['market']}] {search['term']} in {search['location']}...")
     headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
-    run_url = f"https://api.apify.com/v2/acts/{ACTOR}/runs"
-
     payload = {
         "searchTerm": search["term"],
         "location": search["location"],
@@ -147,60 +222,71 @@ def run_scraper(search, max_results=15):
         "maxResults": max_results,
         "jobType": "fulltime",
         "hoursOld": 168,
-        "countryIndeed": "usa",
+        "countryIndeed": "usa" if search["market"] == "US" else "in" if search["market"] == "India" else "ca",
         "descriptionFormat": "markdown",
         "enforceAnnualSalary": True,
         "linkedinFetchDescription": True,
         "proxyConfiguration": {"useApifyProxy": True}
     }
-
     try:
-        resp = requests.post(run_url, json=payload, headers=headers, timeout=30)
+        resp = requests.post(
+            f"https://api.apify.com/v2/acts/{ACTOR}/runs",
+            json=payload, headers=headers, timeout=30
+        )
         if resp.status_code not in (200, 201):
             print(f"   Failed: {resp.status_code}")
             return []
 
-        run_id = resp.json()["data"]["id"]
+        run_id     = resp.json()["data"]["id"]
         dataset_id = resp.json()["data"]["defaultDatasetId"]
 
         for _ in range(24):
             time.sleep(5)
-            status_resp = requests.get(
+            status = requests.get(
                 f"https://api.apify.com/v2/acts/{ACTOR}/runs/{run_id}",
                 headers=headers, timeout=10
-            )
-            status = status_resp.json()["data"]["status"]
+            ).json()["data"]["status"]
             if status in ("SUCCEEDED", "FAILED", "ABORTED"):
                 break
 
         if status != "SUCCEEDED":
-            print(f"   Run ended: {status}")
             return []
 
-        items_resp = requests.get(
+        jobs = requests.get(
             f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json",
             headers=headers, timeout=30
-        )
-        jobs = items_resp.json()
+        ).json()
         print(f"   Found: {len(jobs)} raw results")
         return jobs
-
     except Exception as e:
         print(f"   Error: {e}")
         return []
 
 def run_pipeline():
     print(f"\n{'='*60}")
-    print(f"JOB AUTOMATION v2 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"JOB AUTOMATION v4 — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"Roles: PM + Product Analyst + DA")
+    print(f"Markets: US + India + Canada")
     print(f"Platforms: LinkedIn + Indeed + Glassdoor + Google + ZipRecruiter")
     print(f"{'='*60}\n")
 
     all_jobs = []
-    seen = set()
+    seen     = set()
 
+    print("Step 1: Scraping jobs across all markets...\n")
     for search in SEARCHES:
         jobs = run_scraper(search)
         for job in jobs:
+            job["link"] = (
+                job.get("jobUrl") or job.get("url") or
+                job.get("applyUrl") or job.get("externalApplyLink") or "N/A"
+            )
+            job["platform"] = (
+                job.get("source") or job.get("platform") or
+                job.get("jobBoard") or "LinkedIn"
+            )
+            job["_market"] = search["market"]
+
             job_id = (
                 job.get("id") or
                 f"{job.get('title','')}-{job.get('company','')}-{job.get('location','')}"
@@ -209,63 +295,98 @@ def run_pipeline():
                 continue
             seen.add(job_id)
 
-            if not passes_filter(job):
-                continue
-
-            company = job.get("company") or job.get("companyName") or ""
-            sponsorship = check_sponsorship(company)
-            score = score_job(job, sponsorship, search["priority"])
-
-            job["_sponsorship"] = sponsorship
-            job["_score"] = score
-            job["_search_location"] = search["location"]
-            job["_platform"] = job.get("source") or job.get("platform") or "Unknown"
-            all_jobs.append(job)
-
+            if passes_filter(job):
+                all_jobs.append((job, search["priority"], search["market"]))
         time.sleep(3)
 
-    all_jobs.sort(key=lambda x: x["_score"], reverse=True)
-    top_jobs = all_jobs[:15]
+    print(f"\n{len(all_jobs)} jobs passed filters")
+
+    print(f"\nStep 2: Claude AI scoring {len(all_jobs)} jobs...\n")
+    scored = []
+    for job, priority, market in all_jobs:
+        company     = job.get("company") or job.get("companyName") or ""
+        sponsorship = check_sponsorship(company, market)
+        claude      = score_with_claude(job)
+
+        score = claude.get("score", 5)
+        loc   = (job.get("location") or "").lower()
+
+        # Location boosts
+        if any(x in loc for x in ["utah", "salt lake", "lehi", "provo"]):
+            score = min(score + 2, 10)
+        elif market == "India":
+            score = min(score + 2, 10)  # India = no visa friction boost
+        elif "remote" in loc:
+            score = min(score + 1, 10)
+
+        if priority == 1:
+            score = min(score + 1, 10)
+        if sponsorship == "Yes":
+            score = min(score + 1, 10)
+
+        job["_sponsorship"] = sponsorship
+        job["_score"]       = score
+        job["_claude"]      = claude
+        job["_market"]      = market
+        scored.append(job)
+        time.sleep(1)
+
+    scored.sort(key=lambda x: x["_score"], reverse=True)
+    top = scored[:20]  # Top 20 across all markets
 
     print(f"\n{'='*60}")
-    print(f"TOP {len(top_jobs)} VETTED ROLES THIS WEEK")
+    print(f"TOP {len(top)} VETTED ROLES THIS WEEK")
     print(f"{'='*60}\n")
 
     results = []
-    for i, job in enumerate(top_jobs, 1):
-        title = job.get("title", "N/A")
+    for i, job in enumerate(top, 1):
+        title   = job.get("title", "N/A")
         company = job.get("company") or job.get("companyName", "N/A")
-        location = job.get("location", "N/A")
-        salary = job.get("salary") or job.get("salaryMin") or "Not listed"
-        platform = job.get("_platform", "Unknown")
-        link = job.get("jobUrl") or job.get("link") or job.get("applyUrl", "N/A")
-        score = job["_score"]
-        sponsorship = job["_sponsorship"]
+        loc     = job.get("location", "N/A")
+        salary  = job.get("salary") or "Not listed"
+        link    = job.get("link", "N/A")
+        score   = job["_score"]
+        sp      = job["_sponsorship"]
+        cl      = job["_claude"]
+        market  = job["_market"]
 
-        print(f"{i:2}. [{score}/10] {title}")
-        print(f"    {company} | {location}")
-        print(f"    Salary: {salary} | Platform: {platform}")
-        print(f"    Sponsorship: {sponsorship}")
+        print(f"{i:2}. [{score}/10] [{market}] {title}")
+        print(f"    {company} | {loc}")
+        print(f"    Salary: {salary} | Apply: {cl.get('apply','?')} | Resume: {cl.get('resume_variant','PM_Universal')}")
+        print(f"    Sponsorship: {sp} | {cl.get('key_match','')}")
         print(f"    {link}\n")
 
         results.append({
             "score": score,
+            "market": market,
             "title": title,
             "company": company,
-            "location": location,
+            "location": loc,
             "salary": str(salary),
-            "platform": platform,
-            "sponsorship": sponsorship,
+            "platform": job.get("platform", "LinkedIn"),
+            "sponsorship": sp,
             "link": link,
+            "apply": cl.get("apply", "Maybe"),
+            "resume": cl.get("resume_variant", "PM_Universal"),
+            "key_match": cl.get("key_match", ""),
+            "key_gap": cl.get("key_gap", ""),
+            "reasoning": cl.get("reasoning", ""),
             "date_found": datetime.now().strftime("%Y-%m-%d"),
+            "_claude": cl,
         })
 
     output = f"results_{datetime.now().strftime('%Y%m%d')}.json"
     with open(output, "w") as f:
         json.dump(results, f, indent=2)
 
-    print(f"✅ {len(top_jobs)} vetted roles saved to {output}")
-    print(f"📊 Tracker: https://docs.google.com/spreadsheets/d/1HNxlJ_vIHZl5XWYlYl_RbvtyEfNsLbYbXpCSuzparMU")
+    # Summary by market
+    us_count     = sum(1 for r in results if r["market"] == "US")
+    india_count  = sum(1 for r in results if r["market"] == "India")
+    canada_count = sum(1 for r in results if r["market"] == "Canada")
+
+    print(f"Results by market: US={us_count} | India={india_count} | Canada={canada_count}")
+    print(f"Results saved to {output}")
+    print(f"\nPipeline complete! Review and pick 3-5 to apply this week.\n")
     return results
 
 if __name__ == "__main__":
