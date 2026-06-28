@@ -216,49 +216,28 @@ def passes_filter(job):
     return True
 
 def run_scraper(search, max_results=15):
+    """Scrape via the open-source JobSpy library directly (free, runs in CI).
+    Replaces the paid Apify actor — JobSpy is the same engine the actor wrapped."""
     print(f"   [{search['market']}] {search['term']} in {search['location']}...")
-    headers = {"Authorization": f"Bearer {APIFY_TOKEN}"}
-    payload = {
-        "searchTerm": search["term"],
-        "location": search["location"],
-        "sites": PLATFORMS,
-        "maxResults": max_results,
-        "jobType": "fulltime",
-        "hoursOld": 168,
-        "countryIndeed": "usa" if search["market"] == "US" else "in" if search["market"] == "India" else "ca",
-        "descriptionFormat": "markdown",
-        "enforceAnnualSalary": True,
-        "linkedinFetchDescription": True,
-        "proxyConfiguration": {"useApifyProxy": True}
-    }
+    from jobspy import scrape_jobs  # lazy import (keeps module importable without it)
+    country = {"US": "USA", "India": "India", "Canada": "Canada"}.get(search["market"], "USA")
     try:
-        resp = requests.post(
-            f"https://api.apify.com/v2/acts/{ACTOR}/runs",
-            json=payload, headers=headers, timeout=30
+        df = scrape_jobs(
+            site_name=PLATFORMS,
+            search_term=search["term"],
+            google_search_term=f"{search['term']} jobs near {search['location']}",
+            location=search["location"],
+            results_wanted=max_results,
+            hours_old=168,
+            country_indeed=country,
+            linkedin_fetch_description=True,   # full descriptions + direct apply URLs
         )
-        if resp.status_code not in (200, 201):
-            print(f"   Failed: {resp.status_code}")
+        if df is None or len(df) == 0:
+            print("   Found: 0")
             return []
-
-        run_id     = resp.json()["data"]["id"]
-        dataset_id = resp.json()["data"]["defaultDatasetId"]
-
-        for _ in range(24):
-            time.sleep(5)
-            status = requests.get(
-                f"https://api.apify.com/v2/acts/{ACTOR}/runs/{run_id}",
-                headers=headers, timeout=10
-            ).json()["data"]["status"]
-            if status in ("SUCCEEDED", "FAILED", "ABORTED"):
-                break
-
-        if status != "SUCCEEDED":
-            return []
-
-        jobs = requests.get(
-            f"https://api.apify.com/v2/datasets/{dataset_id}/items?format=json",
-            headers=headers, timeout=30
-        ).json()
+        # pandas NaN -> None so downstream `.get(...) or ...` works cleanly.
+        df = df.astype(object).where(df.notna(), None)
+        jobs = df.to_dict("records")
         print(f"   Found: {len(jobs)} raw results")
         return jobs
     except Exception as e:
