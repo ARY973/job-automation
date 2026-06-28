@@ -35,7 +35,7 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
 HEADERS = ["Date Applied", "Company", "Role Title", "Location", "Market",
            "Industry", "Source", "Sponsorship", "Resume Version",
            "Cover Letter", "Application Status", "Response Date",
-           "Notes", "Next Action"]
+           "Notes", "Next Action", "Link"]
 
 # 0-based column indices used to identify an existing row.
 COMPANY_COL = 1   # Company
@@ -81,6 +81,7 @@ def format_row(job):
         "",                                                           # Response Date
         " | ".join(note_bits),                                        # Notes
         f"Apply: {job.get('apply', 'Maybe')}",                       # Next Action
+        job.get("link", ""),                                          # Link
     ]
 
 

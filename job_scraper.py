@@ -277,12 +277,16 @@ def run_pipeline():
     for search in SEARCHES:
         jobs = run_scraper(search)
         for job in jobs:
+            # JobSpy uses snake_case: job_url_direct (direct apply), job_url (listing).
+            # Keep camelCase fallbacks in case the actor renames fields.
             job["link"] = (
+                job.get("job_url_direct") or job.get("job_url") or
                 job.get("jobUrl") or job.get("url") or
                 job.get("applyUrl") or job.get("externalApplyLink") or "N/A"
             )
+            # JobSpy uses "site" for the board name (linkedin/indeed/...).
             job["platform"] = (
-                job.get("source") or job.get("platform") or
+                job.get("site") or job.get("source") or job.get("platform") or
                 job.get("jobBoard") or "LinkedIn"
             )
             job["_market"] = search["market"]
