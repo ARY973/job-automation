@@ -17,6 +17,12 @@ from datetime import datetime
 
 APIFY_TOKEN       = os.getenv('APIFY_TOKEN')
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+
+# Local H-1B sponsorship lookup (DOL OFLC LCA FY2025). Degrades gracefully if absent.
+try:
+    from sponsorship import get_sponsorship as _sponsor_lookup
+except Exception:
+    _sponsor_lookup = None
 ACTOR             = "openclawai~job-board-scraper"
 PLATFORMS         = ["linkedin", "indeed", "glassdoor", "google", "zip_recruiter"]
 
@@ -185,17 +191,14 @@ def check_sponsorship(company, market):
         return "N/A - India role"
     if market == "Canada":
         return "No lottery - Express Entry"
-    if not company:
-        return "Unknown"
-    try:
-        clean = company.lower().strip()
-        for w in [",", ".", "inc", "llc", "ltd", "corp"]:
-            clean = clean.replace(w, "")
-        url = f"https://h1bdata.info/index.php?em={requests.utils.quote(clean.strip())}&job=product+manager&city=&year=2024"
-        resp = requests.get(url, timeout=8)
-        return "Yes" if resp.status_code == 200 and len(resp.text) > 2000 else "Unknown"
-    except:
-        return "Unknown"
+    # Use the local OFLC LCA lookup: real per-employer H-1B history, role-aware.
+    if _sponsor_lookup:
+        try:
+            summary, _facts = _sponsor_lookup(company or "", "US")
+            return summary
+        except Exception:
+            pass
+    return "Unknown"
 
 def passes_filter(job):
     title   = (job.get("title") or "").lower()
@@ -325,7 +328,7 @@ def run_pipeline():
 
         if priority == 1:
             score = min(score + 1, 10)
-        if sponsorship == "Yes":
+        if str(sponsorship).startswith(("Strong", "Moderate")):
             score = min(score + 1, 10)
 
         job["_sponsorship"] = sponsorship
