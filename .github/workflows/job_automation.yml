@@ -5,9 +5,9 @@ on:
     # ── SCHEDULE (edit just this one line to change cadence) ───────────────────
     # 15:00 UTC ≈ 9:00 AM Mountain (8:00 AM in winter / MST) — your existing run time.
     #   Daily:          '0 15 * * *'
-    #   Weekdays only:  '0 15 * * 1-5'  (current)
-    #   Weekly (Mon):   '0 15 * * 1'
-    - cron: '0 15 * * 1-5'
+    #   Weekdays only:  '0 15 * * 1-5'
+    #   Weekly (Mon):   '0 15 * * 1'  (current — descaled for low-season; bump up in fall)
+    - cron: '0 15 * * 1'
   workflow_dispatch:
 
 jobs:
