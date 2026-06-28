@@ -1,8 +1,13 @@
-name: Weekly Job Discovery Pipeline
+name: Daily Job Discovery Pipeline
 
 on:
   schedule:
-    - cron: '0 15 * * 1'
+    # ── SCHEDULE (edit just this one line to change cadence) ───────────────────
+    # 15:00 UTC ≈ 9:00 AM Mountain (8:00 AM in winter / MST) — your existing run time.
+    #   Daily:          '0 15 * * *'
+    #   Weekdays only:  '0 15 * * 1-5'  (current)
+    #   Weekly (Mon):   '0 15 * * 1'
+    - cron: '0 15 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -20,15 +25,23 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dotenv
+          pip install requests python-dotenv gspread google-auth
 
       - name: Run job scraper
         env:
           APIFY_TOKEN: ${{ secrets.APIFY_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           python3 job_scraper.py
 
-      - name: Upload results as artifact
+      - name: Append new jobs to Google Sheet
+        env:
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python3 sheet_logger.py
+
+      - name: Upload results as artifact (backup)
         uses: actions/upload-artifact@v4
         with:
           name: job-results-${{ github.run_number }}
