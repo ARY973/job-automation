@@ -1,20 +1,18 @@
 """
-Google Sheets Auto-Logger  (v2 — real writes + dedup)
-=====================================================
+Google Sheets Auto-Logger  (v3 — targets the v2 tracker + dedup)
+================================================================
 Reads the latest results_*.json produced by job_scraper.py and APPENDS
-only previously-unseen jobs to Aryan's Google Sheet tracker.
+only previously-unseen jobs to Aryan's "Job Application Tracker v2".
 
-Runs unattended inside GitHub Actions. Because MCP/connectors are NOT
-available in CI, this uses a Google service account via gspread.
+Runs unattended inside GitHub Actions via a Google service account (gspread).
 
 Required environment variables (set as GitHub Secrets):
-    GOOGLE_SERVICE_ACCOUNT_JSON  - the full service-account JSON (paste contents)
-    GOOGLE_SHEET_ID              - optional; defaults to the tracker below
+    GOOGLE_SERVICE_ACCOUNT_JSON  - the full service-account JSON
+    GOOGLE_SHEET_ID              - optional; defaults to the v2 tracker below
 
-Dedup logic:
-    A job is "already seen" if its Link matches a Link already in the sheet.
-    For rows whose link is missing/N/A, we fall back to a
-    title|company|location key. Only new jobs are appended.
+Dedup: a job is "already seen" if its title|company|location matches a row
+already in the sheet. Only genuinely new jobs are appended. (The v2 sheet has
+no Link column, so we key on title+company+location rather than URL.)
 """
 
 import os
@@ -27,77 +25,62 @@ from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Use the env var only if it's non-empty; an unset GitHub secret injects "".
-SHEET_ID = os.getenv("GOOGLE_SHEET_ID") or "1HNxlJ_vIHZl5XWYlYl_RbvtyEfNsLbYbXpCSuzparMU"
+# Use the env var only if non-empty; an unset GitHub secret injects "".
+# Default = "Aryan Mudhole — Job Application Tracker v2".
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID") or "1Di3HzjEVzTUmFJb4a8S0cOSdOgsdBZYAHS_2Uwh5kcA"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 
-HEADERS = ["Date", "Company", "Role", "Location", "Industry",
-           "Source", "Sponsorship", "Resume", "Status",
-           "Response", "Notes", "Next Action", "Link"]
+# v2 column layout (order matters — appended rows must line up under these).
+HEADERS = ["Date Applied", "Company", "Role Title", "Location", "Market",
+           "Industry", "Source", "Sponsorship", "Resume Version",
+           "Cover Letter", "Application Status", "Response Date",
+           "Notes", "Next Action"]
 
-# Column index (0-based) of the Link column, used as the dedup key.
-LINK_COL = HEADERS.index("Link")
+# 0-based column indices used to identify an existing row.
+COMPANY_COL = 1   # Company
+ROLE_COL = 2      # Role Title
+LOCATION_COL = 3  # Location
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-def _norm_link(link):
-    """Normalize a job URL for comparison (strip query string, trailing slash)."""
-    if not link:
-        return ""
-    link = str(link).strip().lower()
-    if link in ("n/a", "na", "none", "-"):
-        return ""
-    link = link.split("?")[0].rstrip("/")
-    return link
-
-
-def _fallback_key(title, company, location):
-    """Used when a job has no usable link."""
+def _key(title, company, location):
     base = f"{title}|{company}|{location}".lower()
     return re.sub(r"\s+", " ", base).strip()
 
 
 def job_key(job):
-    """Stable identity for a job dict from results_*.json."""
-    link = _norm_link(job.get("link", ""))
-    if link:
-        return link
-    return _fallback_key(job.get("title", ""), job.get("company", ""),
-                         job.get("location", ""))
+    return _key(job.get("title", ""), job.get("company", ""), job.get("location", ""))
 
 
 def row_key(row):
-    """Stable identity for an existing sheet row (list of cell strings)."""
-    link = _norm_link(row[LINK_COL] if len(row) > LINK_COL else "")
-    if link:
-        return link
-    title    = row[2] if len(row) > 2 else ""   # Role
-    company  = row[1] if len(row) > 1 else ""   # Company
-    location = row[3] if len(row) > 3 else ""   # Location
-    return _fallback_key(title, company, location)
+    role = row[ROLE_COL] if len(row) > ROLE_COL else ""
+    company = row[COMPANY_COL] if len(row) > COMPANY_COL else ""
+    location = row[LOCATION_COL] if len(row) > LOCATION_COL else ""
+    return _key(role, company, location)
 
 
 def format_row(job):
-    """Format a job result (from results_*.json) as a Google Sheets row."""
+    """Format a job result (results_*.json) as a v2 Sheets row (14 cols)."""
     score = job.get("score", 0)
     note_bits = [f"Score: {score}/10"]
     if job.get("key_match"):
         note_bits.append(job["key_match"])
     return [
-        job.get("date_found") or datetime.now().strftime("%m/%d/%Y"),  # Date Found
+        job.get("date_found") or datetime.now().strftime("%m/%d/%Y"),  # Date Applied
         job.get("company", ""),                                        # Company
         job.get("title", ""),                                          # Role Title
         job.get("location", ""),                                       # Location
+        job.get("market", ""),                                         # Market
         "",                                                            # Industry (manual)
         job.get("platform", "LinkedIn"),                              # Source
         job.get("sponsorship", "Unknown"),                           # Sponsorship
         job.get("resume", "PM_Universal"),                           # Resume Version
-        "Not Applied",                                                # Status
+        "",                                                           # Cover Letter (manual)
+        "Not Applied",                                                # Application Status
         "",                                                           # Response Date
         " | ".join(note_bits),                                        # Notes
         f"Apply: {job.get('apply', 'Maybe')}",                       # Next Action
-        job.get("link", ""),                                          # Job Link
     ]
 
 
@@ -116,7 +99,6 @@ def log_to_sheet(results):
     ws = _get_worksheet()
     existing = ws.get_all_values()
 
-    # Ensure a header row exists.
     if not existing:
         ws.append_row(HEADERS, value_input_option="USER_ENTERED")
         existing = [HEADERS]

@@ -11,7 +11,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 # Use the env var only if non-empty; an unset GitHub secret injects "".
-SHEET_ID = os.getenv("GOOGLE_SHEET_ID") or "1HNxlJ_vIHZl5XWYlYl_RbvtyEfNsLbYbXpCSuzparMU"
+SHEET_ID = os.getenv("GOOGLE_SHEET_ID") or "1Di3HzjEVzTUmFJb4a8S0cOSdOgsdBZYAHS_2Uwh5kcA"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive"]
 
