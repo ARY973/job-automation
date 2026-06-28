@@ -28,7 +28,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 SHEET_ID = os.getenv("GOOGLE_SHEET_ID", "1HNxlJ_vIHZl5XWYlYl_RbvtyEfNsLbYbXpCSuzparMU")
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
+          "https://www.googleapis.com/auth/drive"]
 
 HEADERS = ["Date", "Company", "Role", "Location", "Industry",
            "Source", "Sponsorship", "Resume", "Status",
