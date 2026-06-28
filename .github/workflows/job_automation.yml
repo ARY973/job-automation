@@ -25,7 +25,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install requests python-dotenv gspread google-auth
+          pip install requests python-dotenv gspread google-auth python-jobspy
 
       - name: Run job scraper
         env:
