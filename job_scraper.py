@@ -28,21 +28,20 @@ PLATFORMS         = ["linkedin", "indeed", "glassdoor", "google", "zip_recruiter
 
 # ── Search Configurations ─────────────────────────────────────────────────────
 SEARCHES = [
-    # ── US Utah — Priority 1 ──────────────────────────────────────────────────
-    {"location": "Salt Lake City, UT",  "term": "Associate Product Manager",     "priority": 1, "market": "US"},
-    {"location": "Salt Lake City, UT",  "term": "AI Product Analyst",            "priority": 1, "market": "US"},
-    {"location": "Salt Lake City, UT",  "term": "Product Analyst",               "priority": 1, "market": "US"},
-    {"location": "Lehi, UT",            "term": "Associate Product Manager",     "priority": 1, "market": "US"},
-    {"location": "Salt Lake City, UT",  "term": "Technical Business Analyst",    "priority": 1, "market": "US"},
-    {"location": "Salt Lake City, UT",  "term": "Data Analyst",                  "priority": 1, "market": "US"},
+    # ── US Nationwide — all states; ranking weights H-1B sponsorship strength ──
+    {"location": "United States", "term": "Associate Product Manager",  "priority": 1, "market": "US"},
+    {"location": "United States", "term": "AI Product Manager",         "priority": 1, "market": "US"},
+    {"location": "United States", "term": "Product Analyst",            "priority": 1, "market": "US"},
+    {"location": "United States", "term": "Data Product Manager",       "priority": 2, "market": "US"},
+    {"location": "United States", "term": "Technical Business Analyst", "priority": 2, "market": "US"},
+    {"location": "United States", "term": "Data Analyst",              "priority": 2, "market": "US"},
+    {"location": "Remote",        "term": "Associate Product Manager",  "priority": 1, "market": "US"},
+    {"location": "Remote",        "term": "AI Product Analyst",         "priority": 2, "market": "US"},
 
-    # ── US National — Priority 2 ──────────────────────────────────────────────
-    {"location": "Austin, TX",          "term": "Associate Product Manager",     "priority": 2, "market": "US"},
-    {"location": "Seattle, WA",         "term": "Associate Product Manager",     "priority": 2, "market": "US"},
-    {"location": "Denver, CO",          "term": "Product Analyst",               "priority": 2, "market": "US"},
-    {"location": "Atlanta, GA",         "term": "AI Product Analyst",            "priority": 2, "market": "US"},
-    {"location": "Remote",              "term": "Associate Product Manager",     "priority": 2, "market": "US"},
-    {"location": "Remote",              "term": "AI Product Analyst Remote",     "priority": 2, "market": "US"},
+    # ── US Utah — kept for local network advantage (Huntsman alumni, TCI) ──────
+    {"location": "Salt Lake City, UT", "term": "Associate Product Manager", "priority": 1, "market": "US"},
+    {"location": "Salt Lake City, UT", "term": "Product Analyst",           "priority": 1, "market": "US"},
+    {"location": "Lehi, UT",           "term": "Product Manager",           "priority": 1, "market": "US"},
 
     # ── India — Priority 1 (no visa friction) ─────────────────────────────────
     {"location": "Bangalore, India",    "term": "Associate Product Manager",     "priority": 1, "market": "India"},
@@ -296,18 +295,28 @@ def run_pipeline():
 
         score = claude.get("score", 5)
         loc   = (job.get("location") or "").lower()
+        sp    = str(sponsorship)
 
-        # Location boosts
-        if any(x in loc for x in ["utah", "salt lake", "lehi", "provo"]):
+        # ── Sponsorship strength = primary signal for an OPT candidate ────────
+        # (US jobs only; India/Canada fall through to the market boost below.)
+        if sp.startswith("Strong"):
+            score = min(score + 3, 10)
+        elif sp.startswith("Moderate"):
             score = min(score + 2, 10)
-        elif market == "India":
-            score = min(score + 2, 10)  # India = no visa friction boost
+        elif sp.startswith("Light"):
+            score = min(score + 1, 10)
+        elif sp.startswith("None"):
+            score = max(score - 1, 1)   # US company, no FY25 H-1B history: deprioritize
+
+        # ── Market / location (modest) ────────────────────────────────────────
+        if market == "India":
+            score = min(score + 2, 10)          # no visa friction
+        elif any(x in loc for x in ["utah", "salt lake", "lehi", "provo"]):
+            score = min(score + 1, 10)          # local network advantage
         elif "remote" in loc:
             score = min(score + 1, 10)
 
         if priority == 1:
-            score = min(score + 1, 10)
-        if str(sponsorship).startswith(("Strong", "Moderate")):
             score = min(score + 1, 10)
 
         job["_sponsorship"] = sponsorship
@@ -318,7 +327,7 @@ def run_pipeline():
         time.sleep(1)
 
     scored.sort(key=lambda x: x["_score"], reverse=True)
-    top = scored[:20]  # Top 20 across all markets
+    top = scored[:40]  # Top 40 across all markets (broadened for fall applying)
 
     print(f"\n{'='*60}")
     print(f"TOP {len(top)} VETTED ROLES THIS WEEK")
